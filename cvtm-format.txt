@@ -13,7 +13,7 @@ in the case of power loss during writing of an image.
 A public key can optionally be provided.  In that case, each image is
 encrypted with a random symmetric key, which is stored encrypted with
 the public key.  Knowing the sizes or contents of the images or how many
-images have been written requires the public key.
+images have been written requires the corresponding private key.
 
 For example, the image writer is a flash card adapter.  The underlying
 storage is a flash card that plugs in to the adapter.  The adapter
