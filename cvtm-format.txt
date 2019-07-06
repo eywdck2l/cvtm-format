@@ -122,8 +122,8 @@ ending of the first image points to a sentinel.
 
 All numbers are big endian unsigned unless specified otherwise.  The
 structure of entries are described like a packed C struct, that is, no
-padding is present between fields.  The term "block" refers to 512-octet
-blocks.
+padding is present between fields.  The term "block" refers to a
+512-octet block.
 
 CVTM Header
 
@@ -271,7 +271,7 @@ specifies the grain size as (1 << grain_size_exp) blocks.
 		char type[16] = "IMG-ENDING-SIZE";
 		uint32 length = 21;
 		uint8 ending_size;
-	}
+	};
 
 The image ending size entry specifies the size of the image endings.
 The size of image endings may exceed 1 block, because it may be
@@ -373,7 +373,7 @@ ignored when being read.
 		uint32 grain_count;
 		uint32 grain_size_exp;
 		uint32 grains_offset;
-	}
+	};
 
 For normal image endings, the first entry is the general image
 information.  `checksum` is the sha256 checksum of the whole image
@@ -428,7 +428,7 @@ preferred over the global log.
 		uint32 length = 28;
 		uint32 log_offset;
 		uint32 log_size;
-	}
+	};
 
 The `image_log_location` specifies a location for an image log.
 `log_offset` is the offset from the start of the image to the start of
