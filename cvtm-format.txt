@@ -147,9 +147,9 @@ does not have to be text.  If specified as text, it is case sensitive.
 `length` is the total length of the entry including the `type` and
 `length` fields in octets.
 
-The `length`s given in the following is the length for the entries in
+The `length`s given in the following are the lengths for the entries in
 this version of the specification.  In newer versions, new fields may be
-added to the end of the entries.  Then `length` will change.
+added to the end of the entries.  Then `length` will increase.
 Implementations must accept entries with `length`s greater than those
 defined in this document and ignore the additional fields.
 
