@@ -77,41 +77,41 @@ ending of the first image points to a sentinel.
                                            |
         padding                            |
                                            |
-        sentinel          <---+            |
-                          <-+ |            |
-        image               | |            |
-          + ...             | |            |
-          + image ending    | |            |
-            + ...           | |            |
-            + image_start --+ |            |
-            + prev        ----+            |
-            + ...                          |
-                                           |
-        more images ...                    |
-                          <-+<-+           |
-        image               |  |           |
-          + ...             |  |           |
-          + image ending    |  |           |
-            + ...           |  |           |
-            + image_start --+  |           |
-            + prev        -----+           |
-            + ...                          |
-                          <-+<-+           |
-        image               |  |           |
-          + ...             |  |           |
-          + image ending    |  |           |
-            + ...           |  |           |
-            + image_start --+  |           |
-            + prev        -----+           |
-            + ...                          |
-                          <-+<-+           |
-        image               |  |           |
-          + ...             |  |           |
-          + image ending    |  |           |
-            + ...           |  |           |
-            + image_start --+  |           |
-            + prev        -----+           |
-            + ...                          |
+        sentinel          <---+            |  \
+                          <-+ |            |   |
+        image               | |            |   |
+          + ...             | |            |   |
+          + image ending    | |            |   |
+            + ...           | |            |   |
+            + image_start --+ |            |   |
+            + prev        ----+            |   |
+            + ...                          |   |
+                                           |   |
+        more images ...                    |   |
+                          <-+<-+           |   |
+        image               |  |           |   |
+          + ...             |  |           |   |
+          + image ending    |  |           |   |
+            + ...           |  |           |   |
+            + image_start --+  |           |   |
+            + prev        -----+           |    > encrypted
+            + ...                          |   |
+                          <-+<-+           |   |
+        image               |  |           |   |
+          + ...             |  |           |   |
+          + image ending    |  |           |   |
+            + ...           |  |           |   |
+            + image_start --+  |           |   |
+            + prev        -----+           |   |
+            + ...                          |   |
+                          <-+<-+           |   |
+        image               |  |           |   |
+          + ...             |  |           |   |
+          + image ending    |  |           |   |
+            + ...           |  |           |   |
+            + image_start --+  |           |   |
+            + prev        -----+           |   |
+            + ...                          |  /
                                  <-+       |
         unused space               |       |
                                    |       |
@@ -219,6 +219,13 @@ The end pointer location entry specifies a block for the end pointer.
 `end_pointer_pos` is the block index at which an end pointer resides.
 There should be more than 1 of this entry, one for each end pointer.
 
+The RSA public key entry and the null asymmetric encryption entry below
+specify the cipher and key for encrypting image endings.  Other cipher
+may be added in the future.  The writer may allow for more than one
+algorithm.  In that case, the last such entry in the header that the
+card supports takes effect.  The card must not write images if no such
+entry it supports is present in the header.
+
 	struct public_key_rsa {
 		char type[16] = "KEY-RSA";
 		uint32 length;
@@ -226,21 +233,21 @@ There should be more than 1 of this entry, one for each end pointer.
 	};
 
 The RSA public key entry means the image endings are encrypted with
-RSAES-PKCS1-v1.5.  `key` is a DER-encoded RSAPublicKey.
+rSAES-OAEP-SHA256.  The label is the empty string.  `key` is a
+DER-encoded RSAPublicKey.
 
-	struct image_xts_aes_256 {
-		char type[16] = "SYM-XTS-AES-256";
+	struct asymmetric_encryption_null {
+		char type[16] = "ASYMMETRIC-NULL";
 		uint32 length = 20;
 	};
 
-The image XTS-AES-256 entry specifies the images (except for image
-endings) are to be encrypted with XTS-AES-256.  The key is randomly
-generated by the image writer and stored in the corresponding image
-ending.  The key scope start is 0.  The data uint size is 512 octets.
+The null asymmetric encryption entry means a null encryption for the
+image endings is wanted.
 
 	struct new_image_basic {
 		char type[16] = "IMGTYPE-BASIC";
-		uint32 length = 25;
+		uint32 length = 29;
+		uint32 cipher;
 		uint32 grain_count;
 		uint8 grain_size_exp;
 	};
@@ -252,6 +259,19 @@ with zeros.  In the future, new image types and conditionals may be
 added.  For example, the size might be determined by the space left on
 the underlying storage.  And the image might have contents such as a
 file system.
+
+`cipher` is the cipher used to encrypt the images.  It is one of the
+following:
+
+   0: Null
+
+      The images are not encrypted.
+
+   1: XTS-AES-256
+
+      The key is randomly generated by the image writer and stored in
+      the corresponding image ending.  The key scope start is 0.  The
+      data uint size is 512 octets.
 
 TODO Specify what happens if the new image might not fit in the unused
 space of the underlying storage.  And work out a way to both provide
@@ -357,7 +377,7 @@ The image ending contains entries in the same format as the header
 entries.  It is stored encrypted with the asymmetric algorithm specified
 in the header or in plaintext if no asymmetric algorithm is specified.
 Currently the only supported asymmetric encryption algorithm is
-RSAES-PKCS1-v1.5.  Image endings longer than the message length of the
+rSAES-OAEP-SHA256.  Image endings longer than the message length of the
 underlying asymmetric encryption algorithm are not supported.  Image
 endings shorter than the message length or 512 octets if no encryption
 is applied are padded with zeros.  The contents of the padding are
@@ -365,8 +385,7 @@ ignored when being read.
 
 	struct image_configuration_basic {
 		char type[16] = "IMGCONF-BASIC";
-		uint32 length = 76;
-		char checksum[32];
+		uint32 length = 44;
 		uint32 image_ending_length;
 		uint32 image_start;
 		uint32 prev;
@@ -376,9 +395,8 @@ ignored when being read.
 	};
 
 For normal image endings, the first entry is the general image
-information.  `checksum` is the sha256 checksum of the whole image
-ending, including the padding.  It is set to zero when computing the
-checksum.
+information.  Integrity of the message depends on OAEP's ability to
+identify a corrupted message.  No checksum is included.
 
 `image_ending_length` is the length of the image ending excluding the
 padding in octets.  Same as for the header, the final image ending entry
@@ -400,23 +418,17 @@ exist in the archive is defined.  It has the following format.
 
 	struct image_ending_sentinel {
 		char type[16] = "NO-MORE-IMAGES";
-		uint32 length = 52;
-		char checksum[32];
+		uint32 length = 20;
 	};
 
-`checksum` is the same as that in `image_configuration_basic`.  For
-512-octet image endings, its value in hex is:
-
-  A0C5414A0CC4B624D53551F38B486CA464AA408E2A300A737846E43D27262197
-
-	struct image_key_xts_aes_256 {
-		char type[16] = "KEY-XTS-AES-256";
-		uint32 length = 84;
-		char key[64];
+	struct image_key {
+		char type[16] = "IMG-KEY";
+		uint32 length;
+		char key[];
 	};
 
-The image key XTS-AES-256 entry contains the key used when the image is
-encrypted with XTS-AES-256.
+The image key entry contains the image key.  In the case of XTS-AES-256,
+`key` is 64 bytes.
 
 An image may have a log between the grain mapping and the grains.  It is
 encrypted along with the image.  If sensitive information is to be
