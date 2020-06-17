@@ -2,13 +2,13 @@ The CVTM format
 
 Overview
 
-The CVTM is a format for storing disk images.
+The CVTM is a format for storing multiple disk images.
 
-A CVTM containing only the configuration can be written to the
+An archive containing only the configuration can be written to the
 underlying storage.  Then an image writer can add disk images to the
-CVTM.  The underlying device does not need to support atomic writes.  It
-is the job of the format to guarantee the CVTM is in a valid state even
-in the case of power loss during writing of an image.
+archive.  The underlying device does not need to support atomic writes.
+It is the job of the format to guarantee the archive is in a valid state
+even in the case of power loss during writing of an image.
 
 A public key can optionally be provided.  In that case, each image is
 encrypted with a random symmetric key, which is stored encrypted with
@@ -18,26 +18,27 @@ images have been written requires the corresponding private key.
 For example, the image writer is a flash card adapter.  The underlying
 storage is a flash card that plugs in to the adapter.  The adapter
 presents itself to the host (for instance a camera) as a normal flash
-card.  When powered on, the adapter adds a new image to the CVTM.  Its
-size grows as the host writes data to the adapter.
+card.  When powered on, the adapter adds a new image to the archive.
+Its size grows as the host writes data to the adapter.
 
-The CVTM consists of a header, image area, and several end pointers.
+The archive consists of a header, image area, and several end pointers.
 The header contains information about its format and the format of the
 images.  An end pointer points to the end of the image area currently
 used.  Among the end pointers with a good checksum, the one last written
 (i.e. the one whose value is the highest) is effective when reading.
 
-The image area is continuous.  It contains images.  Images are written
-by the image writer.  Their format is similar to the format for virtual
-machine images.  An image's contents are divided into grains.  At the
-beginning is the grain mapping table and optionally one or more logs.
-Following that are the grains.  Following the grains is the image
-ending.  The image ending contains a pointer to the previous image, the
-start address of the image and information about the image such as the
-capacity of the image, grain size, and the symmetric image key.  If the
-image is encrypted, the image ending is encrypted with the public key
-provided in the header, and the rest of the image is encrypted with the
-symmetric key.
+Images are written by the image writer.  Their format is similar to
+formats for virtual machine images.  An image's contents are divided
+into clusters.  At the beginning is an L1 mapping table pointing to L2
+tables and optionally one or more logs.  Following that are the
+clusters.  A cluster either contains image data or an L2 table pointing
+to data clusters.  Following the clusters is the image ending.  The
+image ending contains a pointer to the previous image, the start address
+of the image and information about the image such as the capacity of the
+image, cluster size, and the symmetric image key.  If the image is
+encrypted, the image ending is encrypted with the public key provided in
+the header, and the rest of the image is encrypted with the symmetric
+key.
 
 The image ending contains a pointer to the start of the current image
 and a pointer to the end of the previous image.  All the image endings
@@ -50,12 +51,12 @@ Padding may be added between the header, the global log, the end
 pointers, and the images.  For example, to align them to sector
 boundaries of the underlying storage device for faster writes.
 
-The following is an example CVTM with one end pointer following the
-header and another end pointer at the end.  The one at the end has a
-greater `image_end` than the one at the beginning.  So the end pointer
-at the end of the CVTM is effective.  It points to the final image.  The
-image ending of each image points to the previous image.  The image
-ending of the first image points to a sentinel.
+The following is an example archive with one end pointer following the
+header and another end pointer at the end.  End pointer #2 has a greater
+`image_end` than the one at the beginning.  So it is the effective one.
+It points to the final image.  The image ending of each image points to
+the previous image.  The image ending of the first image points to a
+sentinel.
 
         header
           + ...
@@ -70,7 +71,7 @@ ending of the first image points to a sentinel.
                                        |   |
         padding                        |   |
                                        |   |
-        end_pointer (not newest) <-----+   |
+        end_pointer #1 (not newest) <--+   |
           + ...                            |
           + end                            |
           + ...                            |
@@ -115,15 +116,18 @@ ending of the first image points to a sentinel.
                                  <-+       |
         unused space               |       |
                                    |       |
-        end_pointer (newest)     <-|-------+
+        end_pointer #2 (newest)  <-|-------+
           + ...                    |
           + end                  --+
           + ...
 
-All numbers are big endian unsigned unless specified otherwise.  The
-structure of entries are described like a packed C struct, that is, no
-padding is present between fields.  The term "block" refers to a
+The structure of entries are described like a packed C struct, that is,
+no padding is present between fields.  The term "block" refers to a
 512-octet block.
+
+The numbers are little endian unless stated otherwise.  Because storing
+the cluster maps in ram in big endian and having to convert them each
+time is a little troublesome.
 
 CVTM Header
 
@@ -171,12 +175,22 @@ CVTM is not corrupted, implementations may assume that a header with a
 good checksum but with an entry crossing the header boundary is a future
 format and ignore that entry.
 
+	struct image_area {
+		char type[16] = "IMAGE-AREA";
+		uint32 length = 28;
+		uint32 start;
+		uint32 end;
+	}
+
+The image area entry specifies the area an image writer can write images
+to.  End pointers must be outside this area.  `start` and `end` are the
+first block and 1 plus the last block in this area.
+
 	struct global_log_location {
 		char type[16] = "GLOBAL-LOG-LOCAT";
-		uint32 length = 32;
+		uint32 length = 28;
 		uint32 blk_start;
 		uint32 blk_count;
-		uint32 severity;
 	};
 
 TODO Define severity and the format of log messages.  And define what
@@ -196,10 +210,9 @@ undesirable to log sensitive information here.  Thus implementations
 must not log anything not allowed by `sensitivity` in the global log.
 
 	struct image_log_conf {
-		char type[16] = "IMG-LOG-CONF";
-		uint32 length = 28;
+		char type[16] = "IMAGE-LOG-CONF";
+		uint32 length = 24;
 		uint32 log_size;
-		uint32 severity;
 	};
 
 The image log configuration instructs the image writer to add logs to
@@ -219,46 +232,50 @@ The end pointer location entry specifies a block for the end pointer.
 `end_pointer_pos` is the block index at which an end pointer resides.
 There should be more than 1 of this entry, one for each end pointer.
 
-The RSA public key entry and the null asymmetric encryption entry below
-specify the cipher and key for encrypting image endings.  Other cipher
-may be added in the future.  The writer may allow for more than one
-algorithm.  In that case, the last such entry in the header that the
-card supports takes effect.  The card must not write images if no such
-entry it supports is present in the header.
+	struct end_pointer_checksum_type {
+		char type[16] = "END-POINTER-CHEC";
+		uint32 length = 24;
+		uint32 checksum_type;
+	};
 
-	struct public_key_rsa {
-		char type[16] = "KEY-RSA";
+The end pointer checksum type entry specifies how end pointers are
+checksummed.  `checksum_type` is one of:
+
+   0: SHA256
+
+   1: CRC32c
+
+If this entry is not present, SHA256 is used.
+
+	struct ending_cipher_type {
+		char type[16] = "ENDING-CIPHER";
 		uint32 length;
+		uint32 type;
 		char key[];
 	};
 
-The RSA public key entry means the image endings are encrypted with
-rSAES-OAEP-SHA256.  The label is the empty string.  `key` is a
-DER-encoded RSAPublicKey.
+The ending cipher type entry specify the type and public key for
+encrypting image endings.  `type` is one of:
 
-	struct asymmetric_encryption_null {
-		char type[16] = "ASYMMETRIC-NULL";
-		uint32 length = 20;
-	};
+   0: Null
 
-The null asymmetric encryption entry means a null encryption for the
-image endings is wanted.
+      Image endings are not encrypted.  `key` is ignored.
+
+   1: RSA
+
+      Image endings are encrypted with rSAES-OAEP-SHA256.  The label is
+      the empty string.  `key` is a DER-encoded RSAPublicKey.
+
+Multiple entries of this type may appear in an archive header.  In that
+case, an image writer chooses one cipher it supports among those
+specified.
 
 	struct new_image_basic {
-		char type[16] = "IMGTYPE-BASIC";
-		uint32 length = 29;
+		char type[16] = "IMAGE-BASIC";
+		uint32 length = 25;
 		uint32 cipher;
-		uint32 grain_count;
-		uint8 grain_size_exp;
+		uint8 cluster_size_exp;
 	};
-
-The image type entries specify the size and initial contents of the
-image the image writer will present to the host.  Currently, the only
-supported type is the basic type, which is a fixed size image filled
-with zeros.  In the future, new image types and conditionals may be
-added.  For example, the size might be determined by the space left on
-the underlying storage.  And the image might have contents such as a
-file system.
 
 `cipher` is the cipher used to encrypt the images.  It is one of the
 following:
@@ -274,25 +291,37 @@ following:
       octets.  The first data unit in the image, no matter where it is
       in the whole archive, has a tweak of 0.
 
-TODO Specify what happens if the new image might not fit in the unused
-space of the underlying storage.  And work out a way to both provide
-initial contents and allow the size of the image to be determined by the
-remaining space.  A fixed base image will not support the size of the
-overlay image having a variable size.  It is possible to have several
-base images, and let the image writer choose one based on the space
-left.  Then each base image will take up some space, which may lead to
-inefficient space usage.  Maybe we can allow a program to be run on the
-image writer.  In that case the program has to run fast enough.  Another
-option is to fill unused space in the archive with image templates in
-cleartext instead of garbage.  A template may then be used if a new
-image is added that will overwrite the template.
+TODO: Work out a way to both provide initial contents and allow the size
+of the image to be determined by the remaining space.  A fixed base
+image will not support the size of the overlay image having a variable
+size.  It is possible to have several base images, and let the image
+writer choose one based on the space left.  Then each base image will
+take up some space, which may lead to inefficient space usage.  Maybe we
+can allow a program to be run on the image writer.  In that case the
+program has to run fast enough.  Another option is to fill unused space
+in the archive with image templates in cleartext instead of garbage.  A
+template may then be used if a new image is added that will overwrite
+the template.
 
-`grain_count` is the capacity of the image in grains.  Capacities that
-are not divisible by the grain size are not supported.  `grain_size_exp`
-specifies the grain size as (1 << grain_size_exp) blocks.
+Size of new images is not provided in the header.  It is reasonable that
+an implementation will make it the maximum available space left on
+disk.  If it's necessary to limit image sizes, templates will provide
+this function.
+
+`cluster_size_exp` specifies the grain size as (1 << cluster_size_exp)
+blocks.
+
+	struct image_cluster_allocate {
+		char type[16] = "ALLOCATE-ONCE";
+		uint32 length = 24;
+		uint32 allocation_increment;
+	};
+
+`allocation_increment` is a suggestion on the increment for allocating
+space in the archive for an image in number of clusters.
 
 	struct image_ending_size {
-		char type[16] = "IMG-ENDING-SIZE";
+		char type[16] = "ENDING-SIZE";
 		uint32 length = 21;
 		uint8 ending_size;
 	};
@@ -314,7 +343,7 @@ writer communicates with the host using the SD interface.  The CRC is
 computed by the image writer.  If the SD interface is used and this
 entry does not exist, the image writer may use a default CID or give up.
 
-End Pointer
+End Pointers
 
 	struct end_pointer {
 		char checksum[32];
@@ -326,19 +355,26 @@ The end pointer points to the end of the blocks allocated to images.
 `image_end` is the block after the last block allocated to images.  When
 at least one image has been written, blocks from (image_end -
 ending_size) (inclusive) to image_end (exclusive) are the image ending
-of the last image written.  `checksum` is a sha256 checksum computed
-over the `end_pointer` block, including the reserved space.  It is set
-to zero when computing the checksum.  If it is invalid, this block is
+of the last image written.
+
+To compute the checksum, the first 11 bytes of the `checksum` field is
+set to "END-POINTER", and the rest is set to 0.  Then a checksum is
+computed over the whole block.  It can be either SHA256 or CRC32c as
+described in Appendix B of Stream Control Transmission Protocol,
+RFC4960, configured in the archive header.  For CRC32c, the first 4
+bytes of the field `checksum` is set to the checksum, and the next 12
+bytes are set to 0.  The 5th to 16th bytes not being all 0's is to be
+regarded as a bad checksum.  If the checksum is bad, this block is
 corrupted, and other `end_pointer` blocks are used.
 
 If multiple `end_pointer` blocks have good checksums, the one with the
 highest `image_end` address is effective.  Multiple `end_pointer` blocks
-should be present in a CVTM to allow updating them separately so that at
-least one will be valid even after a power loss.  Each `end_pointer`
+should be present in an image to allow updating them separately so that
+at least one will be valid even after a power loss.  Each `end_pointer`
 block must be either before or after the image area, not dividing the
 image area.  Multiple `end_pointer` blocks should be present.
 
-To grow an image, at least one `end_pointer` block need to be updated.
+To grow an image, at least one `end_pointer` block needs to be updated.
 The ones with bad checksum, if any, are updated first.  Then the one
 with the lowest `image_end` is updated.  If more than one `end_pointer`
 blocks exist, as what should be the case, all of the ones with the
@@ -348,16 +384,9 @@ address.
 
 Images
 
-Images take continuous space in the CVTM.  Because new functionalities
-may be added, it is possible not all implementations understand what
-space is reserved by a new functionality.  Thus when the CVTM is
-created, a sentinel should be used to mark the beginning of the image
-area.  The sentinel also allows allocating unused space in the CVTM to
-obscure how much data has been written.
-
 Data from the start of an image until the image ending is encrypted
-using the symmetric algorithm.  There may be unused space between the
-grain mapping and the grains, such as to align the grains to allocation
+using the symmetric algorithm.  There may be unused space between the L1
+mapping and the clusters, such as to align the clusters to allocation
 unit boundaries.  The card should overwrite the data in it to give a
 read-only attacker less knowledge.
 
@@ -366,59 +395,56 @@ TODO What should be written to the logs?
 In the case of XTS-AES-256, the tweak associated with the first block of
 the grain mapping is 0.
 
-To grow an image, a new image ending is written to the new ending
-position.  When the write completes, an end pointer is updated to point
-to the new image ending.  When this write completes, data may be written
-up to and excluding the new image ending.
+To grow an image, a new image ending is written.  When the write
+completes, an end pointer is updated to point to the new image ending.
+When this write completes, data may be written up to and excluding the
+new image ending.
 
-The image endings and end pointers have a checksum, so a partially
-updated block can be identified.  Even if a power loss occurs during
-this process, the CVTM is in a valid state.  The new image ending is the
-same as the previous one.  Thus asymmetric encryption only needs to be
-done once per image.
+The image endings and end pointers have a checksum, so a corrupted block
+can be identified.  Even if a power loss occurs during this process, the
+archive is in a valid state.  The new image ending is the same as the
+previous one.  Thus asymmetric encryption only needs to be done once per
+image.
 
 The image ending contains entries in the same format as the header
 entries.  It is stored encrypted with the asymmetric algorithm specified
-in the header or in plaintext if no asymmetric algorithm is specified.
-Currently the only supported asymmetric encryption algorithm is
-rSAES-OAEP-SHA256.  Image endings longer than the message length of the
-underlying asymmetric encryption algorithm are not supported.  Image
-endings shorter than the message length or 512 octets if no encryption
-is applied are padded with zeros.  The contents of the padding are
-ignored when being read.
+in the archive header or in plaintext if no asymmetric algorithm is
+specified.  Currently the only supported asymmetric encryption algorithm
+is rSAES-OAEP-SHA256.  Image endings longer than the message length of
+the underlying asymmetric encryption algorithm are not supported.  If
+the encrypted image ending is shorter than `ending_size`, it is appended
+with zeros.
 
-	struct image_configuration_basic {
-		char type[16] = "IMGCONF-BASIC";
-		uint32 length = 44;
+	struct image_ending_basic {
+		char type[16] = "ENDING";
+		uint32 length = 41;
 		uint32 image_ending_length;
 		uint32 image_start;
 		uint32 prev;
-		uint32 grain_count;
-		uint32 grain_size_exp;
-		uint32 grains_offset;
+		uint32 data_cluster_count;
+		uint8 cluster_size_exp;
+		uint32 clusters_offset;
 	};
 
 For normal image endings, the first entry is the general image
 information.  Integrity of the message depends on OAEP's ability to
-identify a corrupted message.  No checksum is included.
+identify a corrupted message.  No checksum is otherwise included.
 
 `image_ending_length` is the length of the image ending excluding the
 padding in octets.  Same as for the header, the final image ending entry
 must end at `image_ending_length`.  Implementations may ignore an entry
-crossing the boundary.  `grain_count` and `grain_size_exp` mean the same
-as previously defined for the archive header.  They also appear here,
-because support for more than one image configurations in the same CVTM
-may be added in the future, and these fields will help telling what
-format an image is in.
+crossing the boundary.  `cluster_size_exp` means the same as previously
+defined in the archive header.
 
-`prev` is the block index after the previous image.  It is the value in
-the effective end pointer before the new image is added.  `image_start`
-is the address of the grain mapping in 512-octet blocks.  (image_start +
-grains_offset) is the address of the first grain stored (that is, stored
-grain address 0).
+`prev` is the block index after the previous image ending.  It is the
+value in the effective end pointer before the new image is added.
+`image_start` is the block index of the L1 mapping table in 512-octet
+blocks.  (image_start + clusters_offset) is the block index of the first
+cluster stored.
 
 In addition to normal image endings, a sentinel marking no more images
-exist in the archive is defined.  It has the following format.
+exist in the archive is defined.  It can be used to obscure the space
+occupied by images in an archive.  It has the following format.
 
 	struct image_ending_sentinel {
 		char type[16] = "NO-MORE-IMAGES";
@@ -426,7 +452,7 @@ exist in the archive is defined.  It has the following format.
 	};
 
 	struct image_key {
-		char type[16] = "IMG-KEY";
+		char type[16] = "IMAGE-KEY";
 		uint32 length;
 		char key[];
 	};
@@ -440,7 +466,7 @@ logged, and no error makes the image log inaccessible, this log is
 preferred over the global log.
 
 	struct image_log_location {
-		char type[16] = "IMG-LOG-LOCATION";
+		char type[16] = "IMAGE-LOG-LOCATI";
 		uint32 length = 28;
 		uint32 log_offset;
 		uint32 log_size;
@@ -452,19 +478,23 @@ the log in blocks.  `log_size` is the size of the log in blocks.  There
 may be zero or more of this entry present in an image configuration,
 each corresponding to a log.
 
-
-Grain Mapping
-
-The grain mapping consists of `grain_count` entries.  Each entry is a
-32-bit two's complement big endian integer.  They correspond to the
-status of the grains in the image.  If an entry is non-negative, it is
-the index of the corresponding grain stored in the image.  The negative
+Mapping from location of data is 2-level like that in qcow2 images.  An
+L1 table with ceil(data_cluster_count / (128 << cluster_size_exp))
+32-bit entries resides at the start of an image.  L2 table clusters and
+data clusters are allocated space dynamically.  Entries in L1 and L2
+tables are 32-bit two's complement little endian integers.  Negative
 numbers have special meanings.
 
    o -1
 
-      The grain contains all zeros.
+      Data in this area are all zeros.
 
    o -2147483648 ~ -2
 
       Reserved.
+
+A nonnegative entry `N` means the cluster starts at block
+
+   image_start + clusters_offset + (N << cluster_size_exp)
+
+TODO Allow including a hash of the cluster in the mapping
